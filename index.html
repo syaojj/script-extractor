@@ -493,15 +493,27 @@ function parsePairs(blockItems) {
     if (t) pairs.push([t, m]);
     term = ''; mean = '';
   };
-  for (const ch of s) {
+  const isKorCh = c => c >= '가' && c <= '힣';
+  for (let idx = 0; idx < s.length; idx++) {
+    const ch = s[idx];
     const isEng = /[A-Za-z]/.test(ch);
-    const isKor = ch >= '가' && ch <= '힣';
     if (ch === '(') depth++;
+    // 뜻 → 새 영단어(term) 경계: depth 0에서 영문자
     if (depth === 0 && isEng && mode === 'meaning') { flush(); mode = 'term'; }
     if (mode === 'term') {
-      if (depth === 0 && (isEng || " -'.&/".includes(ch))) term += ch;
-      else if (isKor || depth > 0 || '…,;'.includes(ch)) { mode = 'meaning'; mean += ch; }
-      else term += ch;
+      if (isKorCh(ch)) { mode = 'meaning'; mean += ch; }                 // 첫 한글 = 뜻 시작
+      else if (ch === '(') {
+        // 괄호 안에 한글이 있으면 뜻(…의 비율을), 영어뿐이면 영단어의 일부(= flash card)
+        let j = idx + 1, d = 1, hasKor = false;
+        while (j < s.length && d > 0) { const cj = s[j]; if (cj === '(') d++; else if (cj === ')') d--; else if (isKorCh(cj)) hasKor = true; j++; }
+        if (hasKor) { mode = 'meaning'; mean += ch; } else term += ch;
+      }
+      else if (ch === '…') {
+        // '…' 다음(공백 제외)이 한글이면 뜻 시작(…을), 영어면 영단어 속 목적어 자리(knock … over)
+        let j = idx + 1; while (j < s.length && s[j] === ' ') j++;
+        if (isKorCh(s[j] || '')) { mode = 'meaning'; mean += ch; } else term += ch;
+      }
+      else term += ch;                                                    // 영어·공백·= ·기호·숫자 등
     } else mean += ch;
     if (ch === ')') depth = Math.max(0, depth - 1);
   }
