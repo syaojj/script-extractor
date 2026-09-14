@@ -452,11 +452,11 @@ function collapseNum(s) {
 }
 
 // global reading-order lines: {page, col, top, items}
-function getLines(pages) {
+function getLines(pages, colSplit, bottomY) {
   const out = [];
   pages.forEach((items, pi) => {
-    const body = items.filter(it => it.top < 862 && it.str);
-    [[0, HAE_COLSPLIT], [HAE_COLSPLIT, 1e9]].forEach(([lo, hi], col) => {
+    const body = items.filter(it => it.top < bottomY && it.str);
+    [[0, colSplit], [colSplit, 1e9]].forEach(([lo, hi], col) => {
       const cc = body.filter(it => it.x >= lo && it.x < hi);
       for (const ln of clusterLines(cc)) {
         const top = Math.min(...ln.map(c => c.top));
@@ -468,7 +468,7 @@ function getLines(pages) {
   return out;
 }
 
-const STOP = /(지문 해석|선택지|정답|구문|오답|풀이|핵심|빈출)/;
+const STOP = /(지문 해석|선택지|정답|구문|오답|풀이|핵심|빈출|문제 해설|받아쓰기|대화문)/;
 function questionNum(items) {
   const txt = lineText(items);
   if (![...CIRC].some(m => txt.includes(m))) return null;
@@ -477,12 +477,13 @@ function questionNum(items) {
   ds.sort((a, b) => a.x - b.x);
   const num = collapseNum(ds.map(d => d.str).join(''));
   const n = parseInt(num, 10);
-  return (n >= 1 && n <= 10) ? n : null;
+  return (n >= 1 && n <= 60) ? n : null;   // 독해(1~10)·듣기(1~17 등) 모두 커버
 }
 function isVocabLabel(items) { return lineText(items).trim() === '어휘'; }
 
 function parsePairs(blockItems) {
-  let s = clusterLines(blockItems).map(ln => lineText(ln)).join('');
+  const kept = blockItems.filter(it => !it.serif);   // drop serif dialogue/passage script (듣기 대본 등)
+  let s = clusterLines(kept).map(ln => lineText(ln)).join('');
   s = s.replace(/^\s*어휘\s*/, '');
   const pairs = []; let term = '', mean = '', mode = 'term', depth = 0;
   const flush = () => {
@@ -506,8 +507,10 @@ function parsePairs(blockItems) {
   return pairs;
 }
 
-export function extractHae(pages) {
-  const lines = getLines(pages);
+export function extractHae(pages, W, H) {
+  const colSplit = (W && W > 100) ? W * 0.5 : HAE_COLSPLIT;
+  const bottomY = (H && H > 100) ? H - 32 : 862;
+  const lines = getLines(pages, colSplit, bottomY);
   const rows = [];
   let roundIdx = -1, curType = null;
   const N = lines.length;
@@ -527,19 +530,22 @@ export function extractHae(pages) {
         block = block.concat(nx.items); j++;
       }
       const pairs = parsePairs(block);
-      const rlabel = HAE_LABELS[roundIdx] || `R${roundIdx + 1}`;
-      for (const [eng, kor] of pairs) rows.push({ round: rlabel, number: curType, eng, kor, page: page + 1 });
+      for (const [eng, kor] of pairs) rows.push({ roundIdx, number: curType, eng, kor, page: page + 1 });
       i = j; continue;
     }
     i++;
   }
+  // round labels: MINI 해설(12회: 10회+실전1·2)은 HAE_LABELS, 그 외는 숫자 'NN회'
+  const nR = rows.reduce((m, r) => Math.max(m, r.roundIdx), -1) + 1;
+  const label = idx => (nR === 12 && idx < HAE_LABELS.length) ? HAE_LABELS[idx] : String(idx + 1).padStart(2, '0') + '회';
+  for (const r of rows) { r.round = label(r.roundIdx); delete r.roundIdx; }
   return rows;
 }
 
 export function isHaePdf(pages) {
-  // 해설 has many '정답 풀이' / '지문 해석' section labels
+  // 해설/정답 문서: '정답 풀이' 또는 '문제 해설' 라벨이 여러 페이지에 존재
   let n = 0;
-  for (const items of pages) { const t = items.map(i => i.str).join(''); if (/정답 풀이/.test(t)) n++; if (n >= 3) return true; }
+  for (const items of pages) { const t = items.map(i => i.str).join(''); if (/정답 풀이|문제 해설/.test(t)) n++; if (n >= 3) return true; }
   return false;
 }
 </script>
@@ -833,8 +839,8 @@ async function handleFile(file){
       const res=CoreS.analyze(pages,W,H); QUESTIONS=res.questions; VOCAB=res.vocab;
       if(!QUESTIONS.length&&!VOCAB.length) return fail('이 PDF에서 문제·어휘를 찾지 못했어요. 수능 SYNC 학생용 내지 PDF인지 확인해 주세요. (해설이면 처음 화면에서 ‘해설’을 선택하세요)');
     } else {
-      if(!CoreH.isHaePdf(pages)) return fail('해설 PDF가 아닌 것 같아요. ‘해설(최종)’ PDF인지 확인해 주세요. (내지면 처음 화면에서 ‘학생용’을 선택하세요)');
-      ROWS=CoreH.extractHae(pages);
+      if(!CoreH.isHaePdf(pages)) return fail('해설/정답 PDF가 아닌 것 같아요. ‘정답 풀이’ 또는 ‘문제 해설’이 있는 해설·정답 PDF인지 확인해 주세요. (내지면 처음 화면에서 ‘학생용’을 선택하세요)');
+      ROWS=CoreH.extractHae(pages,W,H);
       if(!ROWS.length) return fail('이 PDF에서 어휘를 찾지 못했어요.');
     }
     $('st-bar').style.width='100%'; showApp();
