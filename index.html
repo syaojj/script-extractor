@@ -468,18 +468,20 @@ function getLines(pages, colSplit, bottomY) {
   return out;
 }
 
-const STOP = /(지문 해석|선택지|정답|구문|오답|풀이|핵심|빈출|문제 해설|받아쓰기|대화문)/;
+const STOP = /(지문 해석|선택지|해설|해석|구문|오답|풀이|핵심|빈출|문제 해설|받아쓰기|대화문|어법 포인트)/;
 function questionNum(items) {
-  const txt = lineText(items);
-  if (![...CIRC].some(m => txt.includes(m))) return null;
-  const ds = items.filter(it => it.size >= 13 && /^\d+$/.test(it.str.trim()));
-  if (!ds.length) return null;
-  ds.sort((a, b) => a.x - b.x);
-  const num = collapseNum(ds.map(d => d.str).join(''));
-  const n = parseInt(num, 10);
-  return (n >= 1 && n <= 60) ? n : null;   // 독해(1~10)·듣기(1~17 등) 모두 커버
+  const txt = lineText(items).trim();
+  // 문항 헤더: 줄 맨 앞 숫자 + ('정답' 또는 원문자 ①~⑤), 그 뒤에 또 숫자가 오면 정답표이므로 제외.
+  const m = txt.match(/^(\d{1,6})\s*(?:정답|[①②③④⑤])(?!\s*\d)/);
+  if (m) { const n = parseInt(collapseNum(m[1]), 10); return (n >= 1 && n <= 300) ? n : null; }
+  // 보조: 큰 숫자(size≥13) + 원문자, 뒤에 숫자 없음 (번호가 줄 맨 앞이 아닌 판형)
+  if ([...CIRC].some(c => txt.includes(c)) && !/[①②③④⑤]\s*\d/.test(txt)) {
+    const ds = items.filter(it => it.size >= 13 && /^\d+$/.test(it.str.trim()));
+    if (ds.length) { ds.sort((a, b) => a.x - b.x); const n = parseInt(collapseNum(ds.map(d => d.str).join('')), 10); return (n >= 1 && n <= 300) ? n : null; }
+  }
+  return null;
 }
-function isVocabLabel(items) { return lineText(items).trim() === '어휘'; }
+function isVocabLabel(items) { const t = lineText(items).trim(); return t === '어휘' || /^어휘(\s|[A-Za-z])/.test(t); }
 
 function parsePairs(blockItems) {
   const kept = blockItems.filter(it => !it.serif);   // drop serif dialogue/passage script (듣기 대본 등)
@@ -512,15 +514,18 @@ export function extractHae(pages, W, H) {
   const bottomY = (H && H > 100) ? H - 32 : 862;
   const lines = getLines(pages, colSplit, bottomY);
   const rows = [];
-  let roundIdx = -1, curType = null;
+  let roundIdx = -1, curType = null, prevNum = null;
   const N = lines.length;
   for (let i = 0; i < N;) {
     const { page, col, top, items } = lines[i];
     const txt = lineText(items);
     if (/빈출\s*어휘/.test(txt)) { curType = null; i++; continue; }
     const qn = questionNum(items);
-    if (qn !== null) { if (qn === 1) roundIdx++; curType = qn; i++; continue; }
-    if (isVocabLabel(items) && roundIdx >= 0 && curType !== null) {
+    if (qn !== null) {
+      if (prevNum === null || qn === 1 || qn < prevNum - 3) roundIdx++;   // 첫 문항 / 1로 리셋 / 큰 폭 감소 = 새 회차
+      prevNum = qn; curType = qn; i++; continue;
+    }
+    if (isVocabLabel(items) && curType !== null) {
       let block = items.slice(); let j = i + 1;
       while (j < N) {
         const nx = lines[j];
