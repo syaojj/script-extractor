@@ -469,10 +469,21 @@ function getLines(pages, colSplit, bottomY) {
 }
 
 const STOP = /(지문 해석|선택지|해설|해석|구문|오답|풀이|핵심|빈출|문제 해설|받아쓰기|대화문|어법 포인트)/;
+// 단원 헤더(회차): 큰 숫자(size≥18)로 시작 + 같은 줄에 한글 제목 (드릴 교재의 01 문장과 동사 등)
+// 번호만 크고(21) 제목은 중간 크기(14)인 경우가 있어, 큰 '숫자' 존재 + 줄 텍스트가 'NN 한글' 형태인지로 판정.
+function unitNum(items) {
+  const hasBigDigit = items.some(it => it.size >= 15 && /^\d+$/.test(it.str.trim()));
+  if (!hasBigDigit) return null;
+  // 'NN 제목' 형태만 단원. 'NN회'(미니/듣기 회차 헤더)는 제외. 앞에 '=' 등 기호가 붙는 경우 허용.
+  const t = lineText(items).trim();
+  const m = t.match(/^[=＝·•\s]*(\d{1,2})\s*(?!회)[가-힣]/);
+  if (!m) return null;
+  return { n: parseInt(m[1], 10), mock: /모의고사/.test(t) };   // '모의고사' 섹션 구분
+}
 function questionNum(items) {
   const txt = lineText(items).trim();
-  // 문항 헤더: 줄 맨 앞 숫자 + ('정답' 또는 원문자 ①~⑤), 그 뒤에 또 숫자가 오면 정답표이므로 제외.
-  const m = txt.match(/^(\d{1,6})\s*(?:정답|[①②③④⑤])(?!\s*\d)/);
+  // 문항 헤더: 줄 맨 앞 숫자 + ('정답'/'해석' 또는 원문자 ①~⑤), 그 뒤에 또 숫자가 오면 정답표이므로 제외.
+  const m = txt.match(/^(\d{1,6})\s*(?:정답|해석|[①②③④⑤])(?!\s*\d)/);
   if (m) { const n = parseInt(collapseNum(m[1]), 10); return (n >= 1 && n <= 300) ? n : null; }
   // 보조: 큰 숫자(size≥13) + 원문자, 뒤에 숫자 없음 (번호가 줄 맨 앞이 아닌 판형)
   if ([...CIRC].some(c => txt.includes(c)) && !/[①②③④⑤]\s*\d/.test(txt)) {
@@ -526,36 +537,42 @@ export function extractHae(pages, W, H) {
   const bottomY = (H && H > 100) ? H - 32 : 862;
   const lines = getLines(pages, colSplit, bottomY);
   const rows = [];
-  let roundIdx = -1, curType = null, prevNum = null;
+  let roundIdx = -1, curType = null, prevNum = null, hasUnits = false, unitNo = null, unitMock = false;
   const N = lines.length;
   for (let i = 0; i < N;) {
     const { page, col, top, items } = lines[i];
     const txt = lineText(items);
     if (/빈출\s*어휘/.test(txt)) { curType = null; i++; continue; }
+    const un = unitNum(items);   // 단원 헤더 = 회차 (드릴 교재)
+    if (un !== null) { hasUnits = true; unitNo = un.n; unitMock = un.mock; curType = null; prevNum = null; i++; continue; }
     const qn = questionNum(items);
     if (qn !== null) {
-      if (prevNum === null || qn === 1 || qn < prevNum - 3) roundIdx++;   // 첫 문항 / 1로 리셋 / 큰 폭 감소 = 새 회차
+      if (!hasUnits && (prevNum === null || qn === 1 || qn < prevNum - 3)) roundIdx++;  // 단원 없는 교재만 번호 리셋으로 회차
       prevNum = qn; curType = qn; i++; continue;
     }
-    if (isVocabLabel(items) && curType !== null) {
+    if (isVocabLabel(items) && (curType !== null || hasUnits)) {
       let block = items.slice(); let j = i + 1;
       while (j < N) {
         const nx = lines[j];
         if (nx.page !== page || nx.col !== col) break;
         const tx = lineText(nx.items);
-        if (STOP.test(tx) || isVocabLabel(nx.items) || questionNum(nx.items) !== null) break;
+        if (STOP.test(tx) || isVocabLabel(nx.items) || questionNum(nx.items) !== null || unitNum(nx.items) !== null) break;
         block = block.concat(nx.items); j++;
       }
       const pairs = parsePairs(block);
-      for (const [eng, kor] of pairs) rows.push({ roundIdx, number: curType, eng, kor, page: page + 1 });
+      const u = hasUnits ? (unitMock ? '모의' + String(unitNo).padStart(2, '0') + '회' : String(unitNo).padStart(2, '0') + '회') : null;
+      for (const [eng, kor] of pairs) rows.push({ u, roundIdx, number: (curType != null ? curType : 0), eng, kor, page: page + 1 });
       i = j; continue;
     }
     i++;
   }
-  // round labels: MINI 해설(12회: 10회+실전1·2)은 HAE_LABELS, 그 외는 숫자 'NN회'
+  // 회차 라벨: 단원 있는 교재는 단원번호 'NN회', MINI 해설(12회)은 HAE_LABELS, 그 외는 숫자 'NN회'
   const nR = rows.reduce((m, r) => Math.max(m, r.roundIdx), -1) + 1;
   const label = idx => (nR === 12 && idx < HAE_LABELS.length) ? HAE_LABELS[idx] : String(idx + 1).padStart(2, '0') + '회';
-  for (const r of rows) { r.round = label(r.roundIdx); delete r.roundIdx; }
+  for (const r of rows) {
+    r.round = (r.u != null) ? r.u : label(r.roundIdx);
+    delete r.roundIdx; delete r.u;
+  }
   return rows;
 }
 
